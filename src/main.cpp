@@ -20,13 +20,9 @@ struct Slice {
 };
 
 struct Input {
-	float data[2 * VECTOR_SIZE];
+	float a[VECTOR_SIZE];
+	float b[VECTOR_SIZE];
 };
-
-auto a_ref(Input& input) -> float* { return &input.data[0]; }
-auto b_ref(Input& input) -> float* { return &input.data[VECTOR_SIZE]; }
-auto a(const Input& input) -> const float* { return &input.data[0]; }
-auto b(const Input& input) -> const float* { return &input.data[VECTOR_SIZE]; }
 
 void fill_vector(std::mt19937& generator, float* vector) {
 	auto dist = std::uniform_real_distribution<float>{-100, 100};
@@ -40,8 +36,8 @@ auto generate_input() -> Input {
 	auto device = std::random_device{};
 	auto generator = std::mt19937{device()};
 	auto input = Input{};
-	fill_vector(generator, a_ref(input));
-	fill_vector(generator, b_ref(input));
+	fill_vector(generator, input.a);
+	fill_vector(generator, input.b);
 	return input;
 }
 
@@ -158,13 +154,13 @@ void run_worker(const Input& input, int master) {
 			return;
 		}
 
-		const auto result = dot_product(&a(input)[data.start_index], &b(input)[data.start_index], data.len);
+		const auto result = dot_product(&input.a[data.start_index], &input.b[data.start_index], data.len);
 		send_result_to(master, result);
 	}
 }
 
 auto run_reference(const Input& input) -> float {
-	return dot_product(a(input), b(input), VECTOR_SIZE);
+	return dot_product(input.a, input.b, VECTOR_SIZE);
 }
 
 auto main(int argc, char** argv) -> int {
