@@ -2,18 +2,16 @@
 #include <span>
 #include <utility>
 #include <climits>
-
-template<typename E> struct Type {};
-template<> struct Type<int> { constexpr static auto datatype = MPI_INT; };
-template<> struct Type<float> { constexpr static auto datatype = MPI_FLOAT; };
-template<> struct Type<double> { constexpr static auto datatype = MPI_DOUBLE; };
-template<> struct Type<std::pair<int, int>> { constexpr static auto datatype = MPI_2INT; };
-
+#include <vector>
 
 namespace mpi
 {
 
-using Two_Ints = std::pair<int, int>;
+using Datatype = MPI_Datatype;
+template<typename E> struct Type { static Datatype datatype; };
+template<> Datatype Type<int>::datatype = MPI_INT;
+template<> Datatype Type<float>::datatype = MPI_FLOAT;
+template<> Datatype Type<std::pair<int, int>>::datatype = MPI_2INT;
 
 struct Tag {
 	int raw = 0;
@@ -39,6 +37,18 @@ struct Status {
 	Rank source;
 	Tag tag;
 };
+
+namespace impl
+{
+
+void write_out_status(Status* status, const MPI_Status& raw_status) {
+	if (status) {
+		status->source = Rank{raw_status.MPI_SOURCE};
+		status->tag = Tag{raw_status.MPI_TAG};
+	}
+}
+
+}
 
 constexpr auto ANY_SOURCE = Rank{MPI_ANY_SOURCE};
 constexpr auto ANY_TAG = Tag{MPI_ANY_TAG};
@@ -70,16 +80,48 @@ void send(Rank dest, Tag tag) {
 }
 
 template<typename T>
-auto receive(Rank source, Tag tag, Status* status = nullptr) -> T {
+auto receive(Rank source = ANY_SOURCE, Tag tag = ANY_TAG, Status* status = nullptr) -> T {
 	T result;
 	auto raw_status = MPI_Status{};
 	MPI_Recv(&result, 1, Type<T>::datatype, source.raw, tag.raw, MPI_COMM_WORLD, &raw_status);
 
-	if (status) {
-		status->source = Rank{raw_status.MPI_SOURCE};
-		status->tag = Tag{raw_status.MPI_TAG};
-	}
+	impl::write_out_status(status, raw_status);
 
+	return result;
+}
+
+template<typename T>
+auto receive(Tag tag, Status* status) -> T {
+	return receive<T>(ANY_SOURCE, tag, status);
+}
+
+template<typename T>
+auto receive(Rank source, Status* status = nullptr) -> T {
+	return receive<T>(source, ANY_TAG, status);
+}
+
+template<typename T>
+auto receive(Status* status = nullptr) -> T {
+	return receive<T>(ANY_SOURCE, ANY_TAG, status);
+}
+
+template<typename E>
+auto receive_into(std::vector<E>* data, Rank source, Tag tag, Status* status = nullptr) {
+	auto raw_status = MPI_Status{};
+	MPI_Probe(source.raw, tag.raw, MPI_COMM_WORLD, &raw_status);
+	impl::write_out_status(status, raw_status);
+	const auto type = Type<E>::datatype;
+	auto count = int{};
+	MPI_Get_count(&status, type, &count);
+	data->resize(count);
+	MPI_Recv(data->data(), data->size(), type, source.raw, tag.raw, MPI_COMM_WORLD, nullptr);
+	return data;
+}
+
+template<typename E>
+auto receive_new(Rank source, Tag tag, Status* status = nullptr) -> std::vector<E> {
+	auto result = std::vector<E>{};
+	receive_into(&result, source, tag, status);
 	return result;
 }
 
@@ -92,5 +134,24 @@ struct Init_Guard {
 		MPI_Finalize();
 	}
 };
+
+template<typename T>
+void broadcast(const T& data) {
+	MPI_Bcast(const_cast<T*>(&data), 1, Type<T>::datatype, rank().raw, MPI_COMM_WORLD);
+}
+
+template<typename T>
+auto receive_broadcast(mpi::Rank source) -> T {
+	auto input = T{};
+	MPI_Bcast(&input, 1, Type<T>::datatype, source.raw, MPI_COMM_WORLD);
+	return input;
+}
+
+auto contiguous_type(int count, Datatype element_type) -> Datatype {
+	auto type = MPI_Datatype{};
+    MPI_Type_contiguous(count, element_type, &type);
+    MPI_Type_commit(&type);
+    return type;
+}
 
 }

@@ -11,13 +11,23 @@ enum Status {
 	Done,
 };
 
-auto starting_index(const mpi::Two_Ints& pair) -> int { return pair.first; };
-auto span_length(const mpi::Two_Ints& pair) -> int { return pair.second; };
-
 struct Input {
 	float a[VECTOR_SIZE];
 	float b[VECTOR_SIZE];
 };
+
+struct Span {
+	int start_index;
+	int len;
+};
+
+namespace mpi
+{
+
+template<> mpi::Datatype Type<Span>::datatype = MPI_2INT;
+template<> mpi::Datatype Type<Input>::datatype = MPI_DATATYPE_NULL; // initialized in main
+
+}
 
 void fill_vector(std::mt19937& generator, float* vector) {
 	auto dist = std::uniform_real_distribution<float>{-100, 100};
@@ -38,37 +48,12 @@ auto generate_input() -> Input {
 
 constexpr auto DONE_TAG = mpi::USER_TAG();
 
-auto advance(int* index, bool* done) -> mpi::Two_Ints {
+auto advance(int* index, bool* done) -> Span {
 	const auto old_index = *index;
 	const auto len = std::min(VECTOR_SIZE - *index, STEP_SIZE);
-	const auto result = mpi::Two_Ints{*index, len};
+	const auto result = Span{*index, len};
 	*index += len;
 	*done = old_index == *index;
-	return result;
-}
-
-void broadcast_input_from(mpi::Rank source, Input& input) {
-	MPI_Bcast(&input, VECTOR_SIZE * 2, MPI_FLOAT, source.raw, MPI_COMM_WORLD);
-}
-
-inline auto receive_broadcast_input_from(mpi::Rank source) -> Input {
-	auto input = Input{};
-	MPI_Bcast(&input, VECTOR_SIZE * 2, MPI_FLOAT, source.raw, MPI_COMM_WORLD);
-	return input;
-}
-
-void send_to(mpi::Rank destination, mpi::Two_Ints data) {
-	mpi::send(data, destination, destination.as_tag());
-}
-
-void send_result_to(mpi::Rank destination, float result) {
-	mpi::send(result, destination, destination.as_tag());
-}
-
-auto receive_result(mpi::Rank* source) -> float {
-	auto status = mpi::Status{};
-	const auto result = mpi::receive<float>(mpi::ANY_SOURCE, mpi::ANY_TAG, &status);
-	*source = status.source;
 	return result;
 }
 
@@ -80,7 +65,7 @@ auto send_work_to(mpi::Rank worker, int* index) -> Status {
 		return Done;
 	}
 
-	send_to(worker, data);
+	mpi::send(data, worker, worker.as_tag());
 	return KeepGoing;
 }
 
@@ -96,9 +81,10 @@ auto accumulate_and_reschedule(int* index, int num_workers) -> float {
 	auto num_finished_workers = 0;
 	auto result = 0.f;
 	for (;;) {
-		auto finished_worker = mpi::Rank{};
-		result += receive_result(&finished_worker);
-		if (send_work_to(finished_worker, index) == Done) {
+		auto status = mpi::Status{};
+		result += mpi::receive<float>(&status);		
+		
+		if (send_work_to(status.source, index) == Done) {
 			if (++num_finished_workers == num_workers) {
 				return result;
 			}
@@ -135,14 +121,14 @@ auto run_master(int num_workers) -> float {
 void run_worker(const Input& input, mpi::Rank master) {
 	for (;;) {
 		auto status = mpi::Status{};
-		const auto data = mpi::receive<mpi::Two_Ints>(master, mpi::ANY_TAG, &status);
+		const auto data = mpi::receive<Span>(master, &status);
 
 		if (status.tag == DONE_TAG) {
 			return;
 		}
 
-		const auto result = dot_product(&input.a[starting_index(data)], &input.b[starting_index(data)], span_length(data));
-		send_result_to(master, result);
+		const auto result = dot_product(&input.a[data.start_index], &input.b[data.start_index], data.len);
+		mpi::send(result, master, master.as_tag());
 	}
 }
 
@@ -152,6 +138,8 @@ auto run_reference(const Input& input) -> float {
 
 auto main(int argc, char** argv) -> int {
 	const auto guard = mpi::Init_Guard{argc, argv};
+
+	mpi::Type<Input>::datatype = mpi::contiguous_type(2 * VECTOR_SIZE, MPI_FLOAT);
 
 	const auto rank = mpi::rank();
 	const auto size = mpi::num_ranks();
@@ -163,7 +151,7 @@ auto main(int argc, char** argv) -> int {
 
 	if (rank == master) {
 		auto input = generate_input();
-		broadcast_input_from(master, input);
+		mpi::broadcast(input);
 
 		printf("master thread has rank %d\n", master.raw);
 
@@ -172,7 +160,7 @@ auto main(int argc, char** argv) -> int {
 
 		printf("calculated dot product on %d element vectors: %f (expected %f)\n", VECTOR_SIZE, result, reference);
 	} else {
-		const auto input = receive_broadcast_input_from(master);
+		const auto input = mpi::receive_broadcast<Input>(master);
 
 		run_worker(input, master);
 	}
