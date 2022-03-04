@@ -28,6 +28,23 @@ auto b_ref(Input& input) -> float* { return &input.data[VECTOR_SIZE]; }
 auto a(const Input& input) -> const float* { return &input.data[0]; }
 auto b(const Input& input) -> const float* { return &input.data[VECTOR_SIZE]; }
 
+void fill_vector(std::mt19937& generator, float* vector) {
+	auto dist = std::uniform_real_distribution<float>{-100, 100};
+
+	for (auto i = 0; i < VECTOR_SIZE; ++i) {
+		vector[i] = dist(generator);
+	}
+}
+
+auto generate_input() -> Input {
+	auto device = std::random_device{};
+	auto generator = std::mt19937{device()};
+	auto input = Input{};
+	fill_vector(generator, a_ref(input));
+	fill_vector(generator, b_ref(input));
+	return input;
+}
+
 constexpr auto DONE_MSG = Slice{-1, -1};
 
 auto is_done(Slice slice) -> bool { return slice.start_index == DONE_MSG.start_index && slice.len == DONE_MSG.len; }
@@ -41,12 +58,14 @@ auto advance(int* index, bool* done) -> Slice {
 	return result;
 }
 
-void fill_vector(std::mt19937& generator, float* vector) {
-	auto dist = std::uniform_real_distribution<float>{-100, 100};
+void broadcast_input_from(int source, Input& input) {
+	MPI_Bcast(&input, VECTOR_SIZE * 2, MPI_FLOAT, source, MPI_COMM_WORLD);
+}
 
-	for (auto i = 0; i < VECTOR_SIZE; ++i) {
-		vector[i] = dist(generator);
-	}
+inline auto receive_broadcast_input_from(int source) -> Input {
+	auto input = Input{};
+	MPI_Bcast(&input, VECTOR_SIZE * 2, MPI_FLOAT, source, MPI_COMM_WORLD);
+	return input;
 }
 
 void send_to(int destination, Slice data) {
@@ -160,13 +179,10 @@ auto main(int argc, char** argv) -> int {
 	const auto master = size - 1;
 	const auto num_workers = size - 1; // coincidentally same definition but different semantics
 
-	auto device = std::random_device{};
-	auto generator = std::mt19937{device()};
-	auto input = Input{};
-	fill_vector(generator, a_ref(input));
-	fill_vector(generator, b_ref(input));
-
 	if (rank == master) {
+		auto input = generate_input();
+		broadcast_input_from(master, input);
+
 		printf("master thread has rank %d\n", master);
 
 		const auto result = run_master(num_workers);
@@ -174,6 +190,8 @@ auto main(int argc, char** argv) -> int {
 
 		printf("calculated dot product on %d element vectors: %f (expected %f)\n", VECTOR_SIZE, result, reference);
 	} else {
+		const auto input = receive_broadcast_input_from(master);
+
 		run_worker(input, master);
 	}
 
