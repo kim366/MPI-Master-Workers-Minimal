@@ -19,6 +19,15 @@ struct Slice {
 	int len;
 };
 
+struct Input {
+	float data[2 * VECTOR_SIZE];
+};
+
+auto a_ref(Input& input) -> float* { return &input.data[0]; }
+auto b_ref(Input& input) -> float* { return &input.data[VECTOR_SIZE]; }
+auto a(const Input& input) -> const float* { return &input.data[0]; }
+auto b(const Input& input) -> const float* { return &input.data[VECTOR_SIZE]; }
+
 constexpr auto DONE_MSG = Slice{-1, -1};
 
 auto is_done(Slice slice) -> bool { return slice.start_index == DONE_MSG.start_index && slice.len == DONE_MSG.len; }
@@ -32,15 +41,12 @@ auto advance(int* index, bool* done) -> Slice {
 	return result;
 }
 
-auto generate_vector(std::mt19937& generator, int n) -> std::vector<float> {
-	auto result = std::vector<float>(n);
+void fill_vector(std::mt19937& generator, float* vector) {
 	auto dist = std::uniform_real_distribution<float>{-100, 100};
 
-	for (auto& x : result) {
-		x = dist(generator);
+	for (auto i = 0; i < VECTOR_SIZE; ++i) {
+		vector[i] = dist(generator);
 	}
-
-	return result;
 }
 
 void send_to(int destination, Slice data) {
@@ -125,7 +131,7 @@ auto run_master(int num_workers) -> float {
 	return result;
 }
 
-void run_worker(const std::vector<float>& a, const std::vector<float>& b, int master) {
+void run_worker(const Input& input, int master) {
 	for (;;) {
 		const auto data = receive_from(master);
 
@@ -133,13 +139,13 @@ void run_worker(const std::vector<float>& a, const std::vector<float>& b, int ma
 			return;
 		}
 
-		const auto result = dot_product(&a[data.start_index], &b[data.start_index], data.len);
+		const auto result = dot_product(&a(input)[data.start_index], &b(input)[data.start_index], data.len);
 		send_result_to(master, result);
 	}
 }
 
-auto run_reference(const std::vector<float>& a, const std::vector<float>& b) -> float {
-	return dot_product(a.data(), b.data(), VECTOR_SIZE);
+auto run_reference(const Input& input) -> float {
+	return dot_product(a(input), b(input), VECTOR_SIZE);
 }
 
 auto main(int argc, char** argv) -> int {
@@ -151,27 +157,24 @@ auto main(int argc, char** argv) -> int {
 
 	assert(size >= 2 && "Need at least one master and one worker process");
 
-	auto device = std::random_device{};
-	auto generator = std::mt19937{device()};
-
-
-	auto a = std::vector<float>{}, b = std::vector<float>{};
-	a = generate_vector(generator, VECTOR_SIZE);
-	b = generate_vector(generator, VECTOR_SIZE);
-
 	const auto master = size - 1;
 	const auto num_workers = size - 1; // coincidentally same definition but different semantics
 
-	if (rank == master) {
+	auto device = std::random_device{};
+	auto generator = std::mt19937{device()};
+	auto input = Input{};
+	fill_vector(generator, a_ref(input));
+	fill_vector(generator, b_ref(input));
 
+	if (rank == master) {
 		printf("master thread has rank %d\n", master);
 
 		const auto result = run_master(num_workers);
-		const auto reference = run_reference(a, b);
+		const auto reference = run_reference(input);
 
 		printf("calculated dot product on %d element vectors: %f (expected %f)\n", VECTOR_SIZE, result, reference);
 	} else {
-		run_worker(a, b, master);
+		run_worker(input, master);
 	}
 
 	MPI_Finalize();
