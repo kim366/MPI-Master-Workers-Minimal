@@ -80,7 +80,7 @@ void send(Rank dest, Tag tag) {
 }
 
 template<typename T>
-auto receive(Rank source = ANY_SOURCE, Tag tag = ANY_TAG, Status* status = nullptr) -> T {
+inline auto receive(Rank source = ANY_SOURCE, Tag tag = ANY_TAG, Status* status = nullptr) -> T {
 	T result;
 	auto raw_status = MPI_Status{};
 	MPI_Recv(&result, 1, Type<T>::datatype, source.raw, tag.raw, MPI_COMM_WORLD, &raw_status);
@@ -91,22 +91,22 @@ auto receive(Rank source = ANY_SOURCE, Tag tag = ANY_TAG, Status* status = nullp
 }
 
 template<typename T>
-auto receive(Tag tag, Status* status) -> T {
+inline auto receive(Tag tag, Status* status) -> T {
 	return receive<T>(ANY_SOURCE, tag, status);
 }
 
 template<typename T>
-auto receive(Rank source, Status* status = nullptr) -> T {
+inline auto receive(Rank source, Status* status = nullptr) -> T {
 	return receive<T>(source, ANY_TAG, status);
 }
 
 template<typename T>
-auto receive(Status* status = nullptr) -> T {
+inline auto receive(Status* status = nullptr) -> T {
 	return receive<T>(ANY_SOURCE, ANY_TAG, status);
 }
 
 template<typename E>
-auto receive_into(std::vector<E>* data, Rank source, Tag tag, Status* status = nullptr) {
+void receive_into(std::vector<E>* data, Rank source, Tag tag, Status* status = nullptr) {
 	auto raw_status = MPI_Status{};
 	MPI_Probe(source.raw, tag.raw, MPI_COMM_WORLD, &raw_status);
 	impl::write_out_status(status, raw_status);
@@ -115,7 +115,6 @@ auto receive_into(std::vector<E>* data, Rank source, Tag tag, Status* status = n
 	MPI_Get_count(&status, type, &count);
 	data->resize(count);
 	MPI_Recv(data->data(), data->size(), type, source.raw, tag.raw, MPI_COMM_WORLD, nullptr);
-	return data;
 }
 
 template<typename E>
@@ -135,16 +134,18 @@ struct Init_Guard {
 	}
 };
 
-template<typename T>
-void broadcast(const T& data) {
-	MPI_Bcast(const_cast<T*>(&data), 1, Type<T>::datatype, rank().raw, MPI_COMM_WORLD);
-}
+template<typename F>
+inline auto generate_and_broadcast(F generator, mpi::Rank source) -> std::invoke_result_t<F> {
+	using result_t = std::invoke_result_t<F>;
+	result_t data;
+	
+	if (rank() == source) {
+		data = generator();
+	}
 
-template<typename T>
-auto receive_broadcast(mpi::Rank source) -> T {
-	auto input = T{};
-	MPI_Bcast(&input, 1, Type<T>::datatype, source.raw, MPI_COMM_WORLD);
-	return input;
+	MPI_Bcast(&data, 1, Type<result_t>::datatype, source.raw, MPI_COMM_WORLD);
+	
+	return data;
 }
 
 auto contiguous_type(int count, Datatype element_type) -> Datatype {

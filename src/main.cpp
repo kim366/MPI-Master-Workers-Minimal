@@ -149,10 +149,9 @@ auto main(int argc, char** argv) -> int {
 	const auto master = mpi::Rank{size - 1};
 	const auto num_workers = size - 1;
 
-	if (rank == master) {
-		auto input = generate_input();
-		mpi::broadcast(input);
+	auto input = mpi::generate_and_broadcast(generate_input, master);
 
+	if (rank == master) {
 		printf("master thread has rank %d\n", master.raw);
 
 		const auto result = run_master(num_workers);
@@ -160,8 +159,6 @@ auto main(int argc, char** argv) -> int {
 
 		printf("calculated dot product on %d element vectors: %f (expected %f)\n", VECTOR_SIZE, result, reference);
 	} else {
-		const auto input = mpi::receive_broadcast<Input>(master);
-
 		run_worker(input, master);
 	}
 }
